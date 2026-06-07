@@ -2,9 +2,9 @@
 
 **D2C Customer Churn Intelligence & Retention** · Capstone Part 4 of 4
 
-A small internal service that turns the Part 3 churn model into an HTTP API the retention/CRM team can call.
-Given a customer's snapshot features it returns a churn probability, a predicted class, a risk level, and a
-short risk explanation.
+This wraps the Part 3 churn model in a small HTTP service so the retention/CRM team can actually use it
+without touching a notebook. You send it a customer's features and it sends back a churn probability, a
+predicted class, a risk level, and a one-line explanation of why.
 
 ## Repository structure
 

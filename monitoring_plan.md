@@ -1,62 +1,68 @@
 # Monitoring & Responsible-Use Plan — Churn Scoring API (Part 4)
 
-This service scores a customer's 60-day churn risk. Because it informs retention spend on real customers, it
-must be monitored after deployment and used within clear guardrails.
+This API puts a 60-day churn score in front of the retention team, and that score ends up steering real money
+toward real customers. So once it's live it can't just be left alone — it needs watching, and it needs a few
+rules about how people are allowed to use it. Here's how I'd keep an eye on it and where I'd draw the lines.
 
-## 1. Data drift (inputs)
-- **What:** distribution of each input feature vs the 2025-09-30 training snapshot.
-- **How:** weekly Population Stability Index (PSI) on the top drivers (`recency_days`, `last_visit_days_ago`,
-  `frequency_180d`, `monetary_180d`, `return_rate_180d`, `negative_ticket_rate_90d`); track null rates and
-  category-level frequencies for the profile fields.
-- **Alert:** PSI > 0.2 on any top driver, or a new/!unseen categorical level, or a >2× change in a feature's
-  null rate.
+## 1. Are the inputs still what the model expects? (data drift)
+- **What I'd watch:** how each input feature's distribution compares to the 2025-09-30 training snapshot.
+- **How:** a weekly Population Stability Index on the features that matter most — `recency_days`,
+  `last_visit_days_ago`, `frequency_180d`, `monetary_180d`, `return_rate_180d`, `negative_ticket_rate_90d` —
+  plus a check on null rates and the category mix in the profile fields.
+- **When to worry:** PSI above 0.2 on any top driver, a categorical value the model never saw in training, or
+  a feature's null rate more than doubling.
 
-## 2. Prediction distribution (outputs)
-- **What:** the daily/weekly distribution of `churn_probability` and the share scored `high`/`medium`/`low`.
-- **Why:** a sudden shift (e.g. average score jumps) usually signals upstream data problems before labels exist.
-- **Alert:** mean predicted probability moves more than ±0.10 vs the trailing 4-week baseline, or the `high`
-  bucket share changes by more than 50% relative.
+## 2. Are the predictions themselves shifting? (output drift)
+- **What I'd watch:** the day-to-day spread of `churn_probability` and how many customers land in
+  `high` / `medium` / `low`.
+- **Why it's useful:** the scores usually move *before* we have any churn labels to check against, so a sudden
+  jump is an early warning that something upstream broke.
+- **When to worry:** the average predicted probability drifts by more than ±0.10 against the trailing four
+  weeks, or the `high` bucket's share swings by more than half.
 
-## 3. Business outcomes (model quality, once labels mature)
-- **What:** after each 60-day window closes, compute realised precision/recall/F1/ROC-AUC of past scores
-  against actual churn; track the lift of contacted vs not-contacted within risk bands (ideally via holdout).
-- **Why:** offline test metrics decay; live performance is the real signal of value.
-- **Alert:** realised recall on churners drops below ~0.80, or precision falls enough to make outreach
-  uneconomic, or a retention A/B holdout shows no incremental retention.
+## 3. Is it actually any good in the wild? (business outcomes)
+- **What I'd watch:** once each 60-day window closes, recompute precision/recall/F1/ROC-AUC of the old scores
+  against what really happened, and compare retention for customers we contacted vs didn't within each risk band.
+- **Why it matters:** offline test numbers go stale fast — the only honest measure is how it does on live data.
+- **When to worry:** realised recall on churners slips below ~0.80, precision drops far enough that outreach
+  stops paying for itself, or an A/B holdout shows we aren't actually saving anyone.
 
-## 4. API errors & operational health
-- **What:** request rate, p50/p95 latency, HTTP 4xx (esp. 422 validation failures) and 5xx rates, and the
-  `/health` `model_loaded` flag.
-- **Why:** a spike in 422s means a caller's schema drifted; 503/`model_loaded=false` means the artifact failed
-  to load.
-- **Alert:** 5xx rate > 1%, sustained 422 rate > 5%, p95 latency above target, or any `model_loaded=false`.
+## 4. Is the service healthy? (operations)
+- **What I'd watch:** request volume, p50/p95 latency, the 4xx rate (especially 422 validation failures), the
+  5xx rate, and the `model_loaded` flag on `/health`.
+- **Why:** a surge in 422s usually means a caller changed their payload format; a 503 with
+  `model_loaded=false` means the model artifact didn't load.
+- **When to worry:** 5xx above 1%, a sustained 422 rate over 5%, p95 latency past target, or `model_loaded`
+  ever coming back false.
 
-## 5. Retraining triggers
-Retrain (and re-validate the threshold) when **any** holds:
-- Scheduled cadence: at least **quarterly**.
-- Drift alert fires (Section 1) or live performance degrades (Section 3).
-- A material business change: pricing, catalogue, loyalty programme, or acquisition mix.
-- The input schema changes (new/removed features).
-Retraining repeats Part 3's pipeline on a fresh snapshot, compares against the current model on a held-out
-split, and only promotes the new model if it matches or beats the incumbent.
+## 5. When to retrain
+I'd retrain — and re-check the threshold — whenever any of these is true:
+- It's been a quarter (regular refresh).
+- A drift alert from Section 1 fires, or live performance from Section 3 slips.
+- Something material changes on the business side: pricing, the catalogue, the loyalty programme, or the
+  acquisition mix.
+- The input schema changes (a feature added or removed).
+
+Retraining just reruns the Part 3 pipeline on a fresh snapshot, compares the new model against the current one
+on a held-out split, and only promotes it if it matches or beats what's already in production.
 
 ---
 
-## Responsible-use note (for the retention team)
+## How the retention team should (and shouldn't) use this
 
-**Use the score to:**
-- **Prioritise** outreach — rank who to contact first when budget/time is limited.
-- **Combine** with the Part 2 segments and human judgement; the score is one input, not a verdict.
-- **Trigger supportive actions** — check-ins, service recovery, relevant offers, or onboarding nudges.
+**Good uses:**
+- **Prioritising** who to contact first when there's only so much time and budget.
+- **Combining** the score with the Part 2 segments and plain human judgement — it's one input, not a verdict.
+- **Triggering helpful things** — a check-in, fixing an open complaint, a relevant offer, an onboarding nudge.
 
-**Do NOT use the score to:**
-- **Deny or degrade service** (e.g. slower support, withholding help) for "likely-to-churn" customers — that
-  causes the churn it predicts and is unethical.
-- **Make automated, irreversible, or customer-facing decisions** with no human in the loop.
-- **Target by demographics.** Age group and city tier are model inputs; base actions on behaviour, and monitor
-  that outreach does not systematically disadvantage any group.
-- **Over-read the number.** It is a *relative risk score*, not a calibrated probability or a certainty — treat
-  a 0.72 as "high risk", not "72% guaranteed to leave".
+**Please don't:**
+- **Make service worse for "likely churners"** (slower support, less help). That actively causes the churn the
+  model predicts, and it isn't fair to the customer.
+- **Wire it up to automatic or customer-facing decisions** with nobody in the loop.
+- **Target by demographics.** Age group and city tier feed the model, so keep actions tied to behaviour and
+  keep checking that outreach isn't quietly disadvantaging any group.
+- **Read too much into the number.** It's a *relative* risk score, not a calibrated probability — a 0.72 means
+  "high risk", not "72% certain to leave".
 
-**Always keep** a low-cost baseline experience for every customer, including low scorers, so the model never
-becomes a reason to abandon recoverable customers.
+And whatever the score says, **every customer still deserves a baseline level of care** — the model should
+never become an excuse to write someone off.
